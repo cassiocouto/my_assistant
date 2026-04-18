@@ -1,0 +1,28 @@
+# Environment file with real secrets — never commit this
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Egg / dist / build artefacts
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+
+# macOS metadata
+.DS_Store
+
+# Editor directories
+.idea/
+.vscode/

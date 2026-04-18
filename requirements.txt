@@ -1,0 +1,19 @@
+# Core web framework
+flask>=3.0.0
+
+# Screenshot capture
+mss>=9.0.1
+
+# Image processing (used by screenshot and Gemini client)
+Pillow>=10.0.0
+
+# Environment variable loading
+python-dotenv>=1.0.0
+
+# LLM providers — install only the one(s) you need:
+openai>=1.0.0          # required when LLM_PROVIDER=openai
+anthropic>=0.36.0      # required when LLM_PROVIDER=claude
+google-generativeai>=0.8.0  # required when LLM_PROVIDER=gemini
+
+# Optional — only needed when USE_NGROK=true
+pyngrok>=7.0.0

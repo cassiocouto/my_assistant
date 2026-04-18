@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>My Assistant</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem 1rem;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #6366f1, #22d3ee);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    header p {
+      color: #94a3b8;
+      font-size: 0.9rem;
+      margin-top: 0.4rem;
+    }
+
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 1rem;
+      padding: 1.5rem;
+      width: 100%;
+      max-width: 640px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      color: #94a3b8;
+      margin-bottom: 0.5rem;
+      font-weight: 500;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 120px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.6rem;
+      color: #e2e8f0;
+      font-size: 1rem;
+      padding: 0.75rem 1rem;
+      resize: vertical;
+      transition: border-color 0.2s;
+      outline: none;
+      line-height: 1.5;
+    }
+
+    textarea:focus { border-color: #6366f1; }
+
+    button {
+      margin-top: 1rem;
+      width: 100%;
+      padding: 0.85rem;
+      background: linear-gradient(135deg, #6366f1, #22d3ee);
+      border: none;
+      border-radius: 0.6rem;
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.2s, transform 0.1s;
+    }
+
+    button:hover:not(:disabled) { opacity: 0.9; }
+    button:active:not(:disabled) { transform: scale(0.98); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .response-section {
+      margin-top: 1.5rem;
+      display: none;
+    }
+
+    .response-section.visible { display: block; }
+
+    .response-box {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 0.6rem;
+      padding: 1rem 1.25rem;
+      white-space: pre-wrap;
+      font-size: 0.97rem;
+      line-height: 1.7;
+      color: #e2e8f0;
+      min-height: 60px;
+    }
+
+    .response-box.error { color: #f87171; border-color: #7f1d1d; }
+
+    .spinner {
+      display: inline-block;
+      width: 1rem;
+      height: 1rem;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 0.5rem;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    footer {
+      margin-top: 2rem;
+      font-size: 0.75rem;
+      color: #475569;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🖥️ My Assistant</h1>
+    <p>Ask anything about what's on screen — code, UI, docs, algorithms, config…</p>
+  </header>
+
+  <div class="card">
+    <label for="prompt">Your question</label>
+    <textarea
+      id="prompt"
+      placeholder="e.g. What does this function do?&#10;Where is the configuration for X?&#10;How can I optimize this algorithm?"
+      autofocus
+    ></textarea>
+
+    <button id="askBtn" onclick="sendPrompt()">Ask Assistant</button>
+
+    <div class="response-section" id="responseSection">
+      <label style="margin-top:1.25rem;">Response</label>
+      <div class="response-box" id="responseBox"></div>
+    </div>
+  </div>
+
+  <footer>Screenshot captured from the host machine &bull; Powered by your chosen LLM</footer>
+
+  <script>
+    const promptEl  = document.getElementById('prompt');
+    const btnEl     = document.getElementById('askBtn');
+    const sectionEl = document.getElementById('responseSection');
+    const boxEl     = document.getElementById('responseBox');
+
+    // Allow Ctrl+Enter / Cmd+Enter to submit
+    promptEl.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') sendPrompt();
+    });
+
+    async function sendPrompt() {
+      const prompt = promptEl.value.trim();
+      if (!prompt) { promptEl.focus(); return; }
+
+      // Loading state
+      btnEl.disabled = true;
+      btnEl.innerHTML = '<span class="spinner"></span>Thinking…';
+      boxEl.className = 'response-box';
+      boxEl.textContent = '';
+      sectionEl.classList.add('visible');
+
+      try {
+        const res  = await fetch('/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt }),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          boxEl.className = 'response-box error';
+          boxEl.textContent = '⚠️ ' + data.error;
+        } else {
+          boxEl.className = 'response-box';
+          boxEl.textContent = data.response;
+        }
+      } catch (err) {
+        boxEl.className = 'response-box error';
+        boxEl.textContent = '⚠️ Network error: ' + err.message;
+      } finally {
+        btnEl.disabled = false;
+        btnEl.textContent = 'Ask Assistant';
+      }
+    }
+  </script>
+</body>
+</html>
