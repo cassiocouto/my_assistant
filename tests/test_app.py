@@ -176,6 +176,15 @@ class TestFlaskApp(unittest.TestCase):
         data = json.loads(resp.data)
         self.assertEqual(data["status"], "ok")
 
+    def test_capture_config_endpoint(self):
+        resp = self.client.get("/capture-config")
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.data)
+        self.assertIn("screen_region", data)
+        self.assertIn("browser", data)
+        self.assertIn("scroll", data["browser"])
+        self.assertEqual(data["browser"]["scroll"]["unchanged_frame_limit"], 3)
+
     def test_ask_returns_llm_response(self):
         resp = self.client.post(
             "/ask",
@@ -222,7 +231,7 @@ class TestFlaskApp(unittest.TestCase):
                 data=json.dumps({"prompt": "test"}),
                 content_type="application/json",
             )
-        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.status_code, 400)
         data = json.loads(resp.data)
         self.assertIn("error", data)
 
@@ -233,7 +242,7 @@ class TestFlaskApp(unittest.TestCase):
                 data=json.dumps({"prompt": "test"}),
                 content_type="application/json",
             )
-        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.status_code, 400)
         data = json.loads(resp.data)
         self.assertIn("error", data)
 

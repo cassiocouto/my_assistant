@@ -28,6 +28,27 @@ SCREENSHOT_REGION = {
     "height": int(os.getenv("SCREENSHOT_HEIGHT", 1080)),
 }
 
+# Browser scroll-capture region in pixels.
+BROWSER_REGION = {
+    "top": int(os.getenv("BROWSER_REGION_TOP", SCREENSHOT_REGION["top"])),
+    "left": int(os.getenv("BROWSER_REGION_LEFT", SCREENSHOT_REGION["left"])),
+    "width": int(os.getenv("BROWSER_REGION_WIDTH", SCREENSHOT_REGION["width"])),
+    "height": int(os.getenv("BROWSER_REGION_HEIGHT", SCREENSHOT_REGION["height"])),
+}
+
+# Click target inside BROWSER_REGION before scrolling starts.
+BROWSER_PAGE_CLICK_X = int(os.getenv("BROWSER_PAGE_CLICK_X", 20))
+BROWSER_PAGE_CLICK_Y = int(os.getenv("BROWSER_PAGE_CLICK_Y", 20))
+
+# Scroll behavior for browser mode.
+BROWSER_SCROLL_INPUT_MODE = os.getenv("BROWSER_SCROLL_INPUT_MODE", "keyboard").strip().lower()
+BROWSER_SCROLL_KEY = os.getenv("BROWSER_SCROLL_KEY", "PageDown").strip()
+BROWSER_SCROLL_MOUSE_DELTA = -1*int(os.getenv("BROWSER_REGION_HEIGHT", 1200))
+BROWSER_SCROLL_DELAY_MS = int(os.getenv("BROWSER_SCROLL_DELAY_MS", 2500))
+BROWSER_SCROLL_OVERLAP = int(os.getenv("BROWSER_SCROLL_OVERLAP", 200))
+BROWSER_SEND_HOME_BEFORE_CAPTURE = os.getenv("BROWSER_SEND_HOME_BEFORE_CAPTURE", "true").lower() == "true"
+BROWSER_STICKY_HEADER_CROP = int(os.getenv("BROWSER_STICKY_HEADER_CROP", 0))
+
 # Flask server settings
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", 5000))

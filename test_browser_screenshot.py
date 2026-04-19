@@ -1,16 +1,9 @@
 """
-Interactive helper to test the full-page browser screenshot mode.
+Interactive helper to calibrate browser scroll-capture mode.
 
-Connects to a running Chrome instance via CDP, captures a full-page screenshot
-of the active tab, and saves it to tmp/browser_preview.png so you can verify
-it looks correct before using browser mode in the assistant.
-
-Prerequisites:
-    pip install playwright
-    playwright install chromium
-
-    Launch Chrome with:
-        chrome --remote-debugging-port=9222
+Previews the configured browser region, validates the page click point, runs
+a short capture sequence using the same click/scroll logic as runtime browser
+mode, and saves raw screenshots under tmp/.
 
 Usage:
     python test_browser_screenshot.py
@@ -18,78 +11,173 @@ Usage:
 
 import os
 import sys
+import time
+import io
+from datetime import datetime
 
-from screenshot import take_browser_screenshot
+import config
+from PIL import Image, ImageDraw
+from screenshot import (
+    _capture_region_png,
+    _focus_browser_page,
+    _images_are_visually_unchanged,
+    _send_browser_scroll_input,
+)
 
-CDP_URL = "http://127.0.0.1:9222"
-PREVIEW_PATH = os.path.join(os.path.dirname(__file__), "tmp", "browser_preview.png")
+TMP_DIR = os.path.join(os.path.dirname(__file__), "tmp")
+
+
+def _print_config() -> dict[str, int]:
+    region = {
+        "top": int(config.BROWSER_REGION["top"]),
+        "left": int(config.BROWSER_REGION["left"]),
+        "width": int(config.BROWSER_REGION["width"]),
+        "height": int(config.BROWSER_REGION["height"]),
+    }
+    click_x = int(config.BROWSER_PAGE_CLICK_X)
+    click_y = int(config.BROWSER_PAGE_CLICK_Y)
+    abs_x = region["left"] + click_x
+    abs_y = region["top"] + click_y
+
+    print("Browser region:")
+    print(f"  top={region['top']} left={region['left']} width={region['width']} height={region['height']}")
+    print("Page click point:")
+    print(f"  relative=({click_x}, {click_y}) absolute=({abs_x}, {abs_y})")
+    print("Scroll config:")
+    print(
+        f"  mode={config.BROWSER_SCROLL_INPUT_MODE} key={config.BROWSER_SCROLL_KEY} "
+        f"mouse_delta={config.BROWSER_SCROLL_MOUSE_DELTA} delay_ms={config.BROWSER_SCROLL_DELAY_MS}"
+    )
+    print(f"  send_home={config.BROWSER_SEND_HOME_BEFORE_CAPTURE}")
+    return region
 
 
 def _check_imports() -> None:
     try:
-        from playwright.sync_api import sync_playwright  # noqa: F401
+        import pyautogui  # noqa: F401
     except ImportError:
-        print("playwright is not installed.")
-        print("Run:  pip install playwright && playwright install chromium")
+        print("pyautogui is not installed.")
+        print("Run:  pip install pyautogui")
         sys.exit(1)
 
 
-def _capture() -> bytes:
-    print(f"Connecting to Chrome at {CDP_URL} …")
-    try:
-        png_bytes, _ = take_browser_screenshot()
-    except RuntimeError as exc:
-        print(f"\nCould not capture browser screenshot: {exc}")
-        sys.exit(1)
+def _save_region_preview(region: dict[str, int], stamp: str) -> str:
+    png_bytes = _capture_region_png(region)
+    image = Image.open(io.BytesIO(png_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(image)
 
-    return png_bytes
+    x = int(config.BROWSER_PAGE_CLICK_X)
+    y = int(config.BROWSER_PAGE_CLICK_Y)
+    r = 10
+    draw.ellipse((x - r, y - r, x + r, y + r), outline="red", width=3)
+    draw.line((x - 16, y, x + 16, y), fill="red", width=2)
+    draw.line((x, y - 16, x, y + 16), fill="red", width=2)
+
+    preview_path = os.path.join(TMP_DIR, f"browser_region_preview_{stamp}.png")
+    image.save(preview_path, format="PNG")
+    return preview_path
 
 
-def _save_preview(png_bytes: bytes) -> None:
-    os.makedirs(os.path.dirname(PREVIEW_PATH), exist_ok=True)
-    with open(PREVIEW_PATH, "wb") as f:
-        f.write(png_bytes)
+UNCHANGED_FRAME_LIMIT = 3
+
+
+def _run_capture(region: dict[str, int]) -> tuple[list[bytes], int]:
+    """Mirror the production loop: scroll until UNCHANGED_FRAME_LIMIT consecutive unchanged frames."""
+    mode = (config.BROWSER_SCROLL_INPUT_MODE or "keyboard").strip().lower()
+    delay_seconds = max(0, int(config.BROWSER_SCROLL_DELAY_MS)) / 1000.0
+
+    _focus_browser_page(region, config.BROWSER_PAGE_CLICK_X, config.BROWSER_PAGE_CLICK_Y)
+    time.sleep(0.15)
+
+    if config.BROWSER_SEND_HOME_BEFORE_CAPTURE:
+        _send_browser_scroll_input("keyboard", "home", 0)
+        time.sleep(0.2)
+
+    raw_chunks = [_capture_region_png(region)]
+    previous = raw_chunks[0]
+    unchanged_count = 0
+    total_scrolls = 0
+
+    while unchanged_count < UNCHANGED_FRAME_LIMIT:
+        _send_browser_scroll_input(mode, config.BROWSER_SCROLL_KEY, config.BROWSER_SCROLL_MOUSE_DELTA)
+        total_scrolls += 1
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+        current = _capture_region_png(region)
+        if _images_are_visually_unchanged(previous, current):
+            unchanged_count += 1
+            print(f"  scroll {total_scrolls}: unchanged ({unchanged_count}/{UNCHANGED_FRAME_LIMIT})")
+            continue
+        raw_chunks.append(current)
+        previous = current
+        unchanged_count = 0
+        print(f"  scroll {total_scrolls}: new frame captured (total: {len(raw_chunks)})")
+
+    return raw_chunks, total_scrolls
+
+
+def _save_outputs(stamp: str, raw_chunks: list[bytes]) -> str:
+    for index, chunk in enumerate(raw_chunks, start=1):
+        path = os.path.join(TMP_DIR, f"browser_raw_{stamp}_{index:02d}.png")
+        with open(path, "wb") as f:
+            f.write(chunk)
+
+    return os.path.join(TMP_DIR, f"browser_raw_{stamp}_01.png")
 
 
 def main() -> None:
     print("=" * 55)
-    print("  my_assistant — Browser Screenshot Test")
+    print("  my_assistant — Browser Scroll-Capture Calibration")
     print("=" * 55)
     print()
 
     _check_imports()
+    os.makedirs(TMP_DIR, exist_ok=True)
 
-    png_bytes = _capture()
+    region = _print_config()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    size_kb = len(png_bytes) / 1024
+    if region["width"] <= 0 or region["height"] <= 0:
+        print("\nInvalid browser region width/height. Update BROWSER_REGION_* in .env.")
+        sys.exit(1)
 
-    # Try to get pixel dimensions via Pillow (optional)
-    dimensions = ""
+    input("\nKeep your browser visible in the configured region, then press Enter to preview... ")
+
     try:
-        import io
-        from PIL import Image
-        img = Image.open(io.BytesIO(png_bytes))
-        dimensions = f", {img.width}×{img.height} px"
-    except Exception:
-        pass
+        preview_path = _save_region_preview(region, stamp)
+    except Exception as exc:
+        print(f"Could not capture region preview: {exc}")
+        sys.exit(1)
 
-    print(f"\nScreenshot captured successfully — {size_kb:.1f} KB{dimensions}")
+    print(f"Saved region preview with click marker: {preview_path}")
 
-    save = input(f"\nSave preview to {PREVIEW_PATH}? [Y/n] ").strip().lower()
-    if save != "n":
-        try:
-            _save_preview(png_bytes)
-            print(f"Saved: {PREVIEW_PATH}")
-        except Exception as exc:
-            print(f"Could not save preview: {exc}")
-            sys.exit(1)
-    else:
-        print("Preview not saved.")
+    run_capture = input("\nRun full scroll-capture sequence now? [Y/n] ").strip().lower()
+    if run_capture == "n":
+        print("Done. Adjust config and re-run this helper.")
+        return
 
+    print(f"\nScrolling until {UNCHANGED_FRAME_LIMIT} consecutive unchanged frames...")
+    try:
+        raw_chunks, total_scrolls = _run_capture(region)
+    except RuntimeError as exc:
+        print(f"\nCapture failed: {exc}")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"\nUnexpected capture error: {exc}")
+        sys.exit(1)
+
+    first_raw_path = _save_outputs(stamp, raw_chunks)
+    print(f"\nSaved {len(raw_chunks)} raw frame(s) across {total_scrolls} scroll(s), starting at: {first_raw_path}")
+    print(f"Total scrolls performed: {total_scrolls}")
     print()
-    print("Everything looks good! You can now use browser mode in the assistant:")
-    print('  POST /ask  {"prompt": "…", "mode": "browser"}')
-    print("Or select 'Full page (Chrome)' in the web UI.")
+    print("Tuning tips:")
+    print("- Review raw frames in tmp/ to verify smooth top-to-bottom progression.")
+    print("- If content loads slowly after scroll, increase BROWSER_SCROLL_DELAY_MS.")
+    print("- Keep the browser visible and avoid touching mouse/keyboard during capture.")
+    print()
+    print("Ready for app browser mode:")
+    print('  POST /ask  {"prompt": "...", "mode": "browser"}')
+    print("UI mode label: Full page (scroll capture)")
 
 
 if __name__ == "__main__":

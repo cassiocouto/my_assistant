@@ -10,7 +10,7 @@ A general-purpose visual assistant that runs on your computer and lets you ask q
 - *"Explain the error message on screen."*
 - *"Summarise this document."*
 
-The assistant captures a configurable area of your screen (or a full-page screenshot of the active Chrome tab), sends it together with your question to an LLM (OpenAI, Claude, or Gemini), and streams the answer back to your browser.
+The assistant captures a configurable area of your screen (or, in browser mode, a calibrated visible browser region with scroll capture), sends it together with your question to an LLM (OpenAI, Claude, or Gemini), and streams the answer back to your browser.
 
 ---
 
@@ -23,7 +23,7 @@ Phone / tablet / laptop (browser)
         ▼
   Flask server  (your computer)
         │
-        ├── takes screenshot (screen region OR active Chrome tab)
+      ├── takes screenshot (screen region OR calibrated browser scroll capture)
         ├── sends screenshot + prompt to LLM API
         └── returns text answer to browser
 ```
@@ -37,7 +37,7 @@ Remote access (from outside your local network) is supported via **ngrok**.
 - Python 3.10+
 - A display / screen (the app captures it)
 - An API key for at least one LLM provider
-- *(Browser mode only)* Google Chrome launched with `--remote-debugging-port=9222`
+- *(Browser mode only)* a visible browser window aligned to your configured browser region
 
 ---
 
@@ -55,8 +55,8 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. (Browser mode only) Install the Playwright browser
-playwright install chromium
+# 4. Browser mode input control helper
+pip install pyautogui
 ```
 
 ---
@@ -125,34 +125,37 @@ SCREENSHOT_HEIGHT=1080
 
 ### 4. (Optional) Configure browser screenshot mode
 
-Browser mode captures a **full-page screenshot** of the active Chrome tab instead of a screen region. No region coordinates are needed.
+Browser mode captures a **visible browser page region** from your screen, then scrolls and captures additional frames. It does not attach to Chrome debugging mode.
 
-**Prerequisites:**
+Add browser capture settings to `.env` (defaults shown):
 
-1. Install Playwright (already in `requirements.txt`) and its browser:
-   ```bash
-   playwright install chromium
-   ```
+```env
+BROWSER_REGION_LEFT=0
+BROWSER_REGION_TOP=0
+BROWSER_REGION_WIDTH=1920
+BROWSER_REGION_HEIGHT=1080
 
-2. Launch Chrome with the remote debugging port enabled:
-   ```bash
-   # Windows
-   chrome.exe --remote-debugging-port=9222
+BROWSER_PAGE_CLICK_X=20
+BROWSER_PAGE_CLICK_Y=20
 
-   # macOS
-   open -a "Google Chrome" --args --remote-debugging-port=9222
+BROWSER_SCROLL_INPUT_MODE=keyboard
+BROWSER_SCROLL_KEY=PageDown
+BROWSER_SCROLL_MOUSE_DELTA=-1200
+BROWSER_SCROLL_DELAY_MS=5000
+BROWSER_SCROLL_OVERLAP=200
+BROWSER_SEND_HOME_BEFORE_CAPTURE=true
+BROWSER_STICKY_HEADER_CROP=0
+```
 
-   # Linux
-   google-chrome --remote-debugging-port=9222
-   ```
+Then run the calibration helper:
 
-3. Verify the setup with the interactive test helper:
-   ```bash
-   python test_browser_screenshot.py
-   ```
-   The helper connects to Chrome, lists open tabs, captures a full-page screenshot, and saves a preview to `tmp/browser_preview.png`.
+```bash
+python test_browser_screenshot.py
+```
 
-4. In the web UI, select **Full page (Chrome)** before asking a question — or include `"mode": "browser"` in your `POST /ask` request.
+The helper previews your configured region, marks the click point, runs a short scroll-capture sequence, and saves raw frames + stitched preview under `tmp/`.
+
+In the web UI, select **Full page (scroll capture)** before asking a question — or include `"mode": "browser"` in your `POST /ask` request.
 
 ---
 
@@ -230,7 +233,7 @@ my_assistant/
 ├── screenshot.py               # Screen capture logic (screen region + browser mode)
 ├── llm_client.py               # LLM provider integrations (OpenAI / Claude / Gemini)
 ├── setup_region.py             # Interactive helper to find screenshot coordinates
-├── test_browser_screenshot.py  # Interactive helper to verify browser screenshot mode
+├── test_browser_screenshot.py  # Interactive helper to calibrate browser scroll-capture mode
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # Template for your .env file
 ├── templates/
@@ -260,6 +263,7 @@ Tests mock all external dependencies (LLM APIs, screen capture) and run without 
 | Port already in use | Change `PORT=5001` in `.env` |
 | Black screenshot | Make sure the region is inside your screen bounds (run `python setup_region.py`) |
 | ngrok error | Verify `NGROK_AUTH_TOKEN` is correct and `pyngrok` is installed |
-| Browser mode: "Could not connect to Chrome" | Launch Chrome with `--remote-debugging-port=9222` (see browser mode setup above) |
-| Browser mode: blank/wrong page captured | Navigate to the desired page in Chrome before asking; the assistant picks the first non-blank tab |
-| `playwright` not found | Run `pip install playwright` then `playwright install chromium` |
+| Browser mode captures wrong area | Recalibrate `BROWSER_REGION_*` and verify with `python test_browser_screenshot.py` |
+| Browser mode does not scroll | Adjust `BROWSER_SCROLL_INPUT_MODE`, `BROWSER_SCROLL_KEY`, or `BROWSER_SCROLL_MOUSE_DELTA` |
+| Browser mode has duplicate seams | Tune `BROWSER_SCROLL_OVERLAP` and `BROWSER_STICKY_HEADER_CROP` |
+| `pyautogui` not found | Run `pip install pyautogui` |

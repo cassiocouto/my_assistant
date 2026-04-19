@@ -1,160 +1,115 @@
 import io
 import base64
+import time
 
-import mss
-from PIL import Image
+from PIL import Image, ImageChops, ImageStat
 
-from config import SCREENSHOT_REGION
+from config import (
+    BROWSER_PAGE_CLICK_X,
+    BROWSER_PAGE_CLICK_Y,
+    BROWSER_REGION,
+    BROWSER_SCROLL_DELAY_MS,
+    BROWSER_SCROLL_INPUT_MODE,
+    BROWSER_SCROLL_KEY,
+    BROWSER_SCROLL_MOUSE_DELTA,
+    BROWSER_SEND_HOME_BEFORE_CAPTURE,
+    SCREENSHOT_REGION,
+)
 
-# Maximum height (pixels) of each image chunk sent to the LLM.
-# Full-width is preserved; only height is capped per chunk.
-CHUNK_HEIGHT = 4000
+UNCHANGED_FRAME_LIMIT = 3
 
 
-def _page_has_rendered_content(page) -> bool:
+def _get_mss_module():
     try:
-        metrics = page.evaluate(
-            """() => {
-                const de = document.documentElement;
-                const body = document.body;
-                const width = Math.max(
-                    de?.scrollWidth || 0,
-                    de?.clientWidth || 0,
-                    body?.scrollWidth || 0,
-                    body?.clientWidth || 0,
-                    window.innerWidth || 0
-                );
-                const height = Math.max(
-                    de?.scrollHeight || 0,
-                    de?.clientHeight || 0,
-                    body?.scrollHeight || 0,
-                    body?.clientHeight || 0,
-                    window.innerHeight || 0
-                );
-                return { width, height };
-            }"""
-        )
-    except Exception:
+        import mss  # lazy import for screenshot operations
+    except ImportError as exc:
+        raise RuntimeError(
+            "Screenshot capture requires mss. Run: pip install mss"
+        ) from exc
+
+    return mss
+
+
+def _get_pyautogui_module():
+    try:
+        import pyautogui  # lazy import for browser mode only
+    except ImportError as exc:
+        raise RuntimeError(
+            "Browser mode requires pyautogui. Run: pip install pyautogui"
+        ) from exc
+
+    pyautogui.PAUSE = 0.08
+    return pyautogui
+
+
+def _capture_region_png(region: dict[str, int]) -> bytes:
+    mss = _get_mss_module()
+    with mss.mss() as sct:
+        raw = sct.grab(region)
+        img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
+def _focus_browser_page(region: dict[str, int], click_x: int, click_y: int) -> None:
+    pyautogui = _get_pyautogui_module()
+
+    screen_x = int(region["left"] + click_x)
+    screen_y = int(region["top"] + click_y)
+    pyautogui.moveTo(screen_x, screen_y, duration=0.1)
+    pyautogui.click()
+
+
+def _send_browser_scroll_input(mode: str, key: str, mouse_delta: int) -> None:
+    pyautogui = _get_pyautogui_module()
+
+    if mode == "mouse":
+        pyautogui.scroll(int(mouse_delta))
+        return
+
+    normalized_key = key.strip().lower().replace(" ", "")
+    if normalized_key in {"pagedown", "page_down"}:
+        normalized_key = "pagedown"
+    elif normalized_key in {"pageup", "page_up"}:
+        normalized_key = "pageup"
+    elif normalized_key == " ":
+        normalized_key = "space"
+    pyautogui.press(normalized_key)
+
+
+def _images_are_visually_unchanged(previous_png: bytes, current_png: bytes) -> bool:
+    prev = Image.open(io.BytesIO(previous_png)).convert("L")
+    curr = Image.open(io.BytesIO(current_png)).convert("L")
+
+    if prev.size != curr.size:
         return False
 
-    return metrics.get("width", 0) > 0 and metrics.get("height", 0) > 0
+    target_size = (360, 360)
+    prev_small = prev.resize(target_size)
+    curr_small = curr.resize(target_size)
+
+    diff = ImageChops.difference(prev_small, curr_small)
+    if diff.getbbox() is None:
+        return True
+
+    mean_delta = ImageStat.Stat(diff).mean[0]
+    return mean_delta < 1.5
 
 
-def _page_is_visible_or_focused(page) -> bool:
-    try:
-        state = page.evaluate(
-            """() => ({
-                visibility: document.visibilityState,
-                focused: document.hasFocus(),
-            })"""
-        )
-    except Exception:
-        return False
-
-    return state.get("visibility") == "visible" or bool(state.get("focused"))
-
-
-def _preload_lazy_content(page) -> None:
-    try:
-        page.evaluate(
-            """async () => {
-                const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-                let lastHeight = 0;
-                for (let i = 0; i < 4; i += 1) {
-                    const currentHeight = Math.max(
-                        document.documentElement?.scrollHeight || 0,
-                        document.body?.scrollHeight || 0
-                    );
-                    window.scrollTo(0, currentHeight);
-                    await wait(250);
-                    if (currentHeight <= lastHeight) {
-                        break;
-                    }
-                    lastHeight = currentHeight;
-                }
-                window.scrollTo(0, 0);
-                await wait(120);
-            }"""
-        )
-    except Exception:
-        # If a site blocks script evaluation, continue with normal capture.
-        pass
-
-
-def _wait_for_page_stability(page) -> None:
-    for state in ("domcontentloaded", "load", "networkidle"):
-        try:
-            page.wait_for_load_state(state, timeout=5000)
-        except Exception:
-            pass
-    page.wait_for_timeout(600)
-
-
-def _get_cdp_page_metrics(page) -> dict[str, int]:
-    session = page.context.new_cdp_session(page)
-    layout = session.send("Page.getLayoutMetrics")
-
-    content = layout.get("cssContentSize") or layout.get("contentSize") or {}
-    viewport = layout.get("cssLayoutViewport") or layout.get("layoutViewport") or {}
-    return {
-        "width": int(content.get("width") or viewport.get("clientWidth") or 0),
-        "height": int(content.get("height") or viewport.get("clientHeight") or 0),
-    }
-
-
-
-def _is_capturable_url(url: str) -> bool:
-    if not url or url == "about:blank":
-        return False
-
-    blocked_prefixes = (
-        "chrome://",
-        "chrome-extension://",
-        "devtools://",
-        "edge://",
-        "about:",
-    )
-    if url.startswith(blocked_prefixes):
-        return False
-
-    return url.startswith(("http://", "https://", "file://"))
-
-
-def _pick_best_capture_page(pages):
-    candidates = [pg for pg in pages if _is_capturable_url(pg.url)]
-    if not candidates:
-        candidates = [pg for pg in pages if pg.url not in ("about:blank", "")]
-    if not candidates:
-        candidates = pages
-
-    for pg in candidates:
-        if _page_is_visible_or_focused(pg):
-            return pg
-
-    for pg in candidates:
-        try:
-            pg.bring_to_front()
-        except Exception:
-            pass
-
-        try:
-            pg.wait_for_load_state("domcontentloaded", timeout=10000)
-        except Exception:
-            pass
-
-        if _page_has_rendered_content(pg):
-            return pg
-
-    page = candidates[0]
-    try:
-        page.set_viewport_size({"width": 1280, "height": 720})
-    except Exception:
-        pass
-    return page
+def _trim_chunk_overlap(chunks: list[bytes], overlap: int, sticky_header_crop: int) -> list[bytes]:
+    # Explicitly ignore overlap/sticky settings: stitching is pure concat in capture order.
+    _ = overlap
+    _ = sticky_header_crop
+    return list(chunks)
 
 
 
 def stitch_png_chunks(chunks: list[bytes]) -> bytes:
+    if not chunks:
+        raise RuntimeError("No browser chunks were captured.")
+
     images = [Image.open(io.BytesIO(chunk)).convert("RGB") for chunk in chunks]
     width = max(image.width for image in images)
     height = sum(image.height for image in images)
@@ -170,105 +125,58 @@ def stitch_png_chunks(chunks: list[bytes]) -> bytes:
     return buffer.getvalue()
 
 
-def _capture_page_chunks_via_cdp(page, chunk_height: int = CHUNK_HEIGHT) -> list[bytes]:
-    _wait_for_page_stability(page)
-    _preload_lazy_content(page)
-
-    session = page.context.new_cdp_session(page)
-    metrics = _get_cdp_page_metrics(page)
-    width = metrics.get("width", 0)
-    height = metrics.get("height", 0)
-
-    if width <= 0 or height <= 0:
-        raise RuntimeError(f"Invalid CDP page metrics before chunk capture: {metrics}")
-
-    chunks = []
-    for top in range(0, height, chunk_height):
-        current_height = min(chunk_height, height - top)
-        result = session.send(
-            "Page.captureScreenshot",
-            {
-                "format": "png",
-                "fromSurface": True,
-                "captureBeyondViewport": True,
-                "clip": {
-                    "x": 0,
-                    "y": top,
-                    "width": width,
-                    "height": current_height,
-                    "scale": 1,
-                },
-            },
-        )
-        chunks.append(base64.b64decode(result["data"]))
-
-    return chunks
-
-
 def take_browser_screenshot_chunks() -> list[bytes]:
-    """
-    Capture the active Chrome page as multiple vertical PNG chunks.
+    """Capture a visible browser region as multiple vertically ordered PNG chunks."""
+    region = {
+        "top": int(BROWSER_REGION["top"]),
+        "left": int(BROWSER_REGION["left"]),
+        "width": int(BROWSER_REGION["width"]),
+        "height": int(BROWSER_REGION["height"]),
+    }
 
-    Chunks are captured directly through the Chrome DevTools Protocol using
-    page-space clips, which is more reliable for very long pages than relying
-    on a single full-page screenshot.
-    """
+    if region["width"] <= 0 or region["height"] <= 0:
+        raise RuntimeError("Browser region width/height must be greater than 0.")
+
+    mode = (BROWSER_SCROLL_INPUT_MODE or "keyboard").strip().lower()
+    if mode not in {"keyboard", "mouse"}:
+        raise RuntimeError("BROWSER_SCROLL_INPUT_MODE must be 'keyboard' or 'mouse'.")
+
+    delay_seconds = max(0, int(BROWSER_SCROLL_DELAY_MS)) / 1000.0
+
     try:
-        from playwright.sync_api import sync_playwright  # lazy import
-    except ImportError as exc:
-        raise RuntimeError(
-            "playwright is not installed. Run: pip install playwright && playwright install chromium"
-        ) from exc
+        _focus_browser_page(region, BROWSER_PAGE_CLICK_X, BROWSER_PAGE_CLICK_Y)
+        time.sleep(0.15)
 
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-            try:
-                if not browser.contexts:
-                    raise RuntimeError(
-                        "Chrome is running but no browser context was found. Open a regular tab and try again."
-                    )
+        if BROWSER_SEND_HOME_BEFORE_CAPTURE:
+            _send_browser_scroll_input("keyboard", "home", 0)
+            time.sleep(0.2)
 
-                context = browser.contexts[0]
-                pages = context.pages
-                if not pages:
-                    raise RuntimeError(
-                        "Chrome is running but there are no open tabs to capture. Open a page and try again."
-                    )
+        chunks = [_capture_region_png(region)]
+        previous_png = chunks[0]
+        unchanged_count = 0
 
-                capturable_pages = [pg for pg in pages if _is_capturable_url(pg.url)]
-                source_pages = capturable_pages if capturable_pages else pages
-                preferred = _pick_best_capture_page(source_pages)
-                ordered_pages = [preferred, *[pg for pg in source_pages if pg is not preferred]]
+        while unchanged_count < UNCHANGED_FRAME_LIMIT:
+            _send_browser_scroll_input(mode, BROWSER_SCROLL_KEY, BROWSER_SCROLL_MOUSE_DELTA)
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
 
-                last_error = None
-                for page in ordered_pages:
-                    try:
-                        page.bring_to_front()
-                    except Exception:
-                        pass
+            current_png = _capture_region_png(region)
+            if _images_are_visually_unchanged(previous_png, current_png):
+                unchanged_count += 1
+                continue
 
-                    try:
-                        return _capture_page_chunks_via_cdp(page)
-                    except Exception as exc:
-                        last_error = exc
-                        continue
+            chunks.append(current_png)
+            previous_png = current_png
+            unchanged_count = 0
 
-                if last_error is not None:
-                    raise RuntimeError(
-                        "Could not capture valid browser chunks from open tabs. "
-                        "Open a regular webpage (http/https/file), keep it visible, and try again."
-                    ) from last_error
-                raise RuntimeError("Could not capture browser chunks.")
-            finally:
-                browser.close()
+        return chunks
+    except RuntimeError:
+        raise
     except Exception as exc:
-        if "connect" in str(exc).lower() or "refused" in str(exc).lower() or "9222" in str(exc):
-            raise RuntimeError(
-                "Could not connect to Chrome. Make sure Chrome is running with "
-                "--remote-debugging-port=9222."
-            ) from exc
-        raise RuntimeError(str(exc)) from exc
+        raise RuntimeError(
+            "Browser scroll capture failed. Keep the target page visible inside the configured browser region "
+            "and avoid interacting until capture completes."
+        ) from exc
 
 
 
@@ -279,6 +187,7 @@ def take_screenshot() -> tuple[bytes, str]:
     Returns:
         A tuple of (raw PNG bytes, base64-encoded PNG string).
     """
+    mss = _get_mss_module()
     with mss.mss() as sct:
         raw = sct.grab(SCREENSHOT_REGION)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
@@ -292,25 +201,3 @@ def take_screenshot() -> tuple[bytes, str]:
 
 
 
-# Browser mode requires:
-#   pip install playwright
-#   playwright install chromium
-# Chrome must be launched with --remote-debugging-port=9222 before using this mode.
-def take_browser_screenshot() -> tuple[bytes, str]:
-    """
-    Capture a full-page screenshot of the active Chrome tab via CDP.
-
-    Attaches to a running Chrome instance at http://localhost:9222.
-    No new browser or tab is launched.
-
-    Returns:
-        A tuple of (raw PNG bytes, base64-encoded PNG string).
-
-    Raises:
-        RuntimeError: If Chrome is not reachable on the expected CDP port.
-    """
-    chunks = take_browser_screenshot_chunks()
-    png_bytes = stitch_png_chunks(chunks)
-
-    img_base64 = base64.b64encode(png_bytes).decode("utf-8")
-    return png_bytes, img_base64
