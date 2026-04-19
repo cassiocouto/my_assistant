@@ -20,6 +20,9 @@ build/
 # Logs
 *.log
 
+# Temporary files
+tmp/
+
 # macOS metadata
 .DS_Store
 

@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>My Assistant</title>
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+  />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -105,11 +109,82 @@
       border: 1px solid #334155;
       border-radius: 0.6rem;
       padding: 1rem 1.25rem;
-      white-space: pre-wrap;
       font-size: 0.97rem;
       line-height: 1.7;
       color: #e2e8f0;
       min-height: 60px;
+      overflow-wrap: anywhere;
+    }
+
+    .response-box > :first-child { margin-top: 0; }
+    .response-box > :last-child { margin-bottom: 0; }
+
+    .response-box p,
+    .response-box ul,
+    .response-box ol,
+    .response-box pre,
+    .response-box blockquote,
+    .response-box table,
+    .response-box h1,
+    .response-box h2,
+    .response-box h3,
+    .response-box h4 {
+      margin: 0 0 0.9rem;
+    }
+
+    .response-box ul,
+    .response-box ol {
+      padding-left: 1.25rem;
+    }
+
+    .response-box li + li {
+      margin-top: 0.35rem;
+    }
+
+    .response-box strong {
+      color: #f8fafc;
+      font-weight: 700;
+    }
+
+    .response-box code {
+      background: rgba(148, 163, 184, 0.15);
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 0.35rem;
+      padding: 0.12rem 0.35rem;
+      font-family: Consolas, "SFMono-Regular", Monaco, monospace;
+      font-size: 0.92em;
+    }
+
+    .response-box pre {
+      background: #020617;
+      border: 1px solid #1e293b;
+      border-radius: 0.7rem;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+    }
+
+    .response-box pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+    }
+
+    .response-box blockquote {
+      border-left: 3px solid #22d3ee;
+      padding-left: 0.9rem;
+      color: #cbd5e1;
+    }
+
+    .response-box hr {
+      border: 0;
+      border-top: 1px solid #334155;
+      margin: 1rem 0;
+    }
+
+    .response-box .katex-display {
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0.25rem 0;
     }
 
     .response-box.error { color: #f87171; border-color: #7f1d1d; }
@@ -143,6 +218,20 @@
   </header>
 
   <div class="card">
+    <label style="margin-bottom:0.4rem;">Screenshot mode</label>
+    <div style="display:flex;gap:1.5rem;margin-bottom:1rem;">
+      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;letter-spacing:normal;font-size:0.9rem;cursor:pointer;">
+        <input type="radio" name="mode" value="screen" checked
+          style="accent-color:#6366f1;width:1rem;height:1rem;cursor:pointer;" />
+        Screen region
+      </label>
+      <label style="display:flex;align-items:center;gap:0.4rem;text-transform:none;letter-spacing:normal;font-size:0.9rem;cursor:pointer;">
+        <input type="radio" name="mode" value="browser"
+          style="accent-color:#6366f1;width:1rem;height:1rem;cursor:pointer;" />
+        Full page (Chrome)
+      </label>
+    </div>
+
     <label for="prompt">Your question</label>
     <textarea
       id="prompt"
@@ -160,11 +249,114 @@
 
   <footer>Screenshot captured from the host machine &bull; Powered by your chosen LLM</footer>
 
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
   <script>
     const promptEl  = document.getElementById('prompt');
     const btnEl     = document.getElementById('askBtn');
     const sectionEl = document.getElementById('responseSection');
     const boxEl     = document.getElementById('responseBox');
+
+    marked.setOptions({
+      breaks: true,
+      gfm: true,
+      headerIds: false,
+      mangle: false,
+    });
+
+    function extractMathSegments(text) {
+      const mathSegments = [];
+      const patterns = [
+        { regex: /\\\[((?:.|\n)*?)\\\]/g, displayMode: true },
+        { regex: /\\\(((?:.|\n)*?)\\\)/g, displayMode: false },
+        { regex: /\$\$((?:.|\n)*?)\$\$/g, displayMode: true },
+      ];
+
+      let output = text;
+
+      for (const pattern of patterns) {
+        output = output.replace(pattern.regex, (_, expression) => {
+          const token = `MATH_TOKEN_${mathSegments.length}`;
+          mathSegments.push({ token, expression: expression.trim(), displayMode: pattern.displayMode });
+          return token;
+        });
+      }
+
+      return { output, mathSegments };
+    }
+
+    function injectMathSegments(root, mathSegments) {
+      if (!mathSegments.length) {
+        return;
+      }
+
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+
+      while (walker.nextNode()) {
+        textNodes.push(walker.currentNode);
+      }
+
+      for (const node of textNodes) {
+        let content = node.textContent;
+        let replaced = false;
+        const fragment = document.createDocumentFragment();
+
+        while (content.length > 0) {
+          let nextMatch = null;
+
+          for (const segment of mathSegments) {
+            const index = content.indexOf(segment.token);
+            if (index !== -1 && (!nextMatch || index < nextMatch.index)) {
+              nextMatch = { index, segment };
+            }
+          }
+
+          if (!nextMatch) {
+            fragment.appendChild(document.createTextNode(content));
+            break;
+          }
+
+          if (nextMatch.index > 0) {
+            fragment.appendChild(document.createTextNode(content.slice(0, nextMatch.index)));
+          }
+
+          const mathEl = document.createElement(nextMatch.segment.displayMode ? 'div' : 'span');
+          mathEl.className = nextMatch.segment.displayMode ? 'math-display' : 'math-inline';
+
+          if (typeof katex !== 'undefined') {
+            katex.render(nextMatch.segment.expression, mathEl, {
+              displayMode: nextMatch.segment.displayMode,
+              throwOnError: false,
+            });
+          } else {
+            mathEl.textContent = nextMatch.segment.expression;
+          }
+
+          fragment.appendChild(mathEl);
+          content = content.slice(nextMatch.index + nextMatch.segment.token.length);
+          replaced = true;
+        }
+
+        if (replaced) {
+          node.parentNode.replaceChild(fragment, node);
+        }
+      }
+    }
+
+    function renderResponse(text) {
+      try {
+        const { output, mathSegments } = extractMathSegments(text);
+        const html = marked.parse(output);
+        boxEl.innerHTML = DOMPurify.sanitize(html);
+        injectMathSegments(boxEl, mathSegments);
+      } catch (err) {
+        boxEl.textContent = text;
+      }
+    }
 
     // Allow Ctrl+Enter / Cmd+Enter to submit
     promptEl.addEventListener('keydown', (e) => {
@@ -174,6 +366,8 @@
     async function sendPrompt() {
       const prompt = promptEl.value.trim();
       if (!prompt) { promptEl.focus(); return; }
+
+      const mode = document.querySelector('input[name="mode"]:checked').value;
 
       // Loading state
       btnEl.disabled = true;
@@ -186,7 +380,7 @@
         const res  = await fetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt }),
+          body: JSON.stringify({ prompt, mode }),
         });
         const data = await res.json();
 
@@ -195,7 +389,7 @@
           boxEl.textContent = '⚠️ ' + data.error;
         } else {
           boxEl.className = 'response-box';
-          boxEl.textContent = data.response;
+          renderResponse(data.response);
         }
       } catch (err) {
         boxEl.className = 'response-box error';

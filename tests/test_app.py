@@ -104,6 +104,44 @@ class TestQueryLlmDispatch(unittest.TestCase):
             self.assertEqual(result, "ok")
 
 
+class TestOpenAiCompatibility(unittest.TestCase):
+    FAKE_B64 = base64.b64encode(b"fake-png-data").decode()
+
+    def _install_fake_openai(self, create_side_effect):
+        fake_openai = types.ModuleType("openai")
+
+        create_mock = MagicMock(side_effect=create_side_effect)
+        fake_client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(
+                completions=types.SimpleNamespace(create=create_mock)
+            )
+        )
+
+        class FakeOpenAI:
+            def __init__(self, api_key):
+                self.api_key = api_key
+                self.chat = fake_client.chat
+
+        fake_openai.OpenAI = FakeOpenAI
+        return fake_openai, create_mock
+
+    def test_openai_does_not_send_output_token_limit(self):
+        import llm_client
+
+        response = types.SimpleNamespace(
+            choices=[types.SimpleNamespace(message=types.SimpleNamespace(content="ok"))]
+        )
+        fake_openai, create_mock = self._install_fake_openai(lambda **kwargs: response)
+
+        with patch.dict(sys.modules, {"openai": fake_openai}):
+            result = llm_client._query_openai("hello", self.FAKE_B64)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(create_mock.call_count, 1)
+        self.assertNotIn("max_completion_tokens", create_mock.call_args.kwargs)
+        self.assertNotIn("max_tokens", create_mock.call_args.kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Tests for the Flask app endpoints
 # ---------------------------------------------------------------------------

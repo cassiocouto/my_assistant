@@ -8,15 +8,37 @@ Routes:
     GET  /health   — Simple health-check endpoint.
 """
 
+import base64
 import logging
+from datetime import datetime
+from pathlib import Path
 
 import config
 from flask import Flask, jsonify, render_template, request
-from llm_client import query_llm
-from screenshot import take_screenshot
+from llm_client import query_llm, query_llm_multi_image
+from screenshot import stitch_png_chunks, take_browser_screenshot_chunks, take_screenshot
 
 app = Flask(__name__)
 logger = logging.getLogger(__name__)
+
+
+def _save_browser_debug_artifacts(png_bytes: bytes, chunks: list[bytes]) -> str:
+    tmp_dir = Path(__file__).resolve().parent / "tmp"
+    tmp_dir.mkdir(exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    base_name = f"browser_debug_{stamp}"
+
+    full_path = tmp_dir / f"{base_name}_full.png"
+    full_path.write_bytes(png_bytes)
+
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_path = tmp_dir / f"{base_name}_chunk_{index:02d}.png"
+        chunk_path.write_bytes(chunk)
+
+    logger.info("[browser-debug] saved full screenshot: %s", full_path)
+    logger.info("[browser-debug] saved %d chunk(s) under prefix: %s", len(chunks), base_name)
+    return base_name
 
 
 @app.route("/")
@@ -39,10 +61,23 @@ def ask():
     if not prompt:
         return jsonify({"error": "Prompt cannot be empty."}), 400
 
+    mode = data.get("mode", "screen")
+
     try:
-        _, image_base64 = take_screenshot()
-        response_text = query_llm(prompt, image_base64)
+        if mode == "browser":
+            chunks = take_browser_screenshot_chunks()
+            png_bytes = stitch_png_chunks(chunks)
+            debug_prefix = _save_browser_debug_artifacts(png_bytes, chunks)
+            images_b64 = [base64.b64encode(c).decode() for c in chunks]
+            logger.info("[browser-debug] prompt (%s): %s", debug_prefix, prompt)
+            response_text = query_llm_multi_image(prompt, images_b64)
+            logger.info("[browser-debug] response (%s): %s", debug_prefix, response_text)
+        else:
+            _, image_base64 = take_screenshot()
+            response_text = query_llm(prompt, image_base64)
         return jsonify({"response": response_text})
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         logger.exception("Error processing request")
         return jsonify({"error": "An error occurred while processing your request. Check the server logs for details."}), 500

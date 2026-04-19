@@ -11,8 +11,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# OpenAI model (default: gpt-4o which supports vision)
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+# OpenAI model (default: gpt-5.4-mini which supports vision)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 
 # Claude model (default: claude-3-5-sonnet which supports vision)
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")

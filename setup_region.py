@@ -31,7 +31,11 @@ def _monitor_info() -> None:
     print()
 
 
-def _save_preview(region: dict, path: str = "/tmp/region_preview.png") -> None:
+def _save_preview(region: dict) -> None:
+    import os
+    tmp_dir = os.path.join(os.path.dirname(__file__), "tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    path = os.path.join(tmp_dir, "region_preview.png")
     with mss.mss() as sct:
         raw = sct.grab(region)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
@@ -62,7 +66,7 @@ def main() -> None:
     region = {"left": left, "top": top, "width": width, "height": height}
 
     print()
-    save = input("Save a preview screenshot to /tmp/region_preview.png? [y/N] ").strip().lower()
+    save = input("Save a preview screenshot to tmp/region_preview.png? [y/N] ").strip().lower()
     if save == "y":
         try:
             _save_preview(region)
