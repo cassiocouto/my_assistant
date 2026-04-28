@@ -30,6 +30,14 @@ def _get_mss_module():
     return mss
 
 
+def _open_mss():
+    mss = _get_mss_module()
+    mss_class = getattr(mss, "MSS", None)
+    if mss_class is not None:
+        return mss_class()
+    return mss.mss()
+
+
 def _get_pyautogui_module():
     try:
         import pyautogui  # lazy import for browser mode only
@@ -43,8 +51,7 @@ def _get_pyautogui_module():
 
 
 def _capture_region_png(region: dict[str, int]) -> bytes:
-    mss = _get_mss_module()
-    with mss.mss() as sct:
+    with _open_mss() as sct:
         raw = sct.grab(region)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
@@ -187,8 +194,7 @@ def take_screenshot() -> tuple[bytes, str]:
     Returns:
         A tuple of (raw PNG bytes, base64-encoded PNG string).
     """
-    mss = _get_mss_module()
-    with mss.mss() as sct:
+    with _open_mss() as sct:
         raw = sct.grab(SCREENSHOT_REGION)
         img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
 
